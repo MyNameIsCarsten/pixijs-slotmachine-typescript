@@ -1,4 +1,4 @@
-import { Application, Assets, Color, Container, FillGradient, Graphics, Renderer, Sprite, Text, TextStyle, Texture } from 'pixi.js';
+import { Application, Assets, BlurFilter, Color, Container, FillGradient, Graphics, Renderer, Sprite, Text, TextStyle, Texture } from 'pixi.js';
 
 
 (async () => {
@@ -8,7 +8,9 @@ import { Application, Assets, Color, Container, FillGradient, Graphics, Renderer
 		resolution: window.devicePixelRatio || 1,
 		autoDensity: true,
 		backgroundColor: 0x6495ed,
-		resizeTo: window 
+		// resizeTo: window,
+		width: 800,
+        height: Math.max(1, window.innerHeight),
 	});
 
 	document.body.appendChild(app.canvas);
@@ -21,7 +23,7 @@ import { Application, Assets, Color, Container, FillGradient, Graphics, Renderer
 	]);
 
 	const SYMBOL_SIZE = 150;
-	const REEL_WIDTH = 160;
+	const REEL_WIDTH = 800 / 5;
 
 	// Create different slot symbols
 	const slotTextures = [
@@ -33,7 +35,10 @@ import { Application, Assets, Color, Container, FillGradient, Graphics, Renderer
 
 	type Reel = {
 		container: Container,
-		icons: Sprite[]
+		icons: Sprite[],
+		position: number,
+		previousPosition: number,
+		blur: BlurFilter
 	}
 
 	// Build the reels
@@ -53,9 +58,9 @@ import { Application, Assets, Color, Container, FillGradient, Graphics, Renderer
 		const reel: Reel = {
 			container: reelContainer,
 			icons: [],
-			// position: 0,
-			// previousPosition: 0,
-			// blur: new BlurFilter(),
+			position: 0,
+			previousPosition: 0,
+			blur: new BlurFilter(),
 		}
 	
 		for (let j = 0; j < 4; j++){
@@ -83,8 +88,6 @@ import { Application, Assets, Color, Container, FillGradient, Graphics, Renderer
 	}
 	// Add reelContainer to app stage, making them visible
 	app.stage.addChild(reelsContainer);
-	
-
 	
 
 	// Build top & bottom covers and position reelContainer
@@ -155,11 +158,148 @@ import { Application, Assets, Color, Container, FillGradient, Graphics, Renderer
 	bottom.eventMode = 'static';
 	bottom.cursor = 'pointer';
 	bottom.addEventListener('pointerup', () => {
-		console.log('Gotcha!');
+		startPlay();
 	})
 
 	// Is Game running or not?
-	//let running: boolean = false;
+	let running: boolean = false;
 
+	// Function to start playing
+	function startPlay(){
+		if(running) return;
+		running = true;
+
+		for(let i = 0; i < reels.length; i++){
+			// Current reel
+			const r = reels[i];
+
+			const extra = Math.floor(Math.random() * 3);
+			const target = r.position + 10 + i * 5 + extra;
+			const time = 2500 + i * 600 +  extra * 600;
+			
+			tweenTo(r, 'position', target, time, backout(0.5), null, i === reels.length-1 ? reelsComplete : null);
+		}
+
+	
+	};
+
+		// Reels done handler.
+    function reelsComplete(): void
+    {
+        running = false;
+    }
+
+	// Listen for animate update.
+	app.ticker.add(() => {
+
+		// Update the slots
+		for(let i = 0; i < reels.length; i++){
+			// Current reel
+			const r = reels[i];
+
+			// Update blur filter y amount based on speed.
+            // This would be better if calculated with time in mind also. Now blur depends on frame rate.
+			r.blur.blurY = (r.position - r.previousPosition) * 8;
+			r.previousPosition = r.position;
+
+			// Update icons position on reel
+			for(let j = 0; j < r.icons.length; j++){
+				// Current icon
+				const s = r.icons[j];
+				const prevy = s.y;
+
+				s.y = ((r.position + j) % r.icons.length) * SYMBOL_SIZE - SYMBOL_SIZE;
+
+				// Detect going over 
+				if(s.y < 0 && prevy > SYMBOL_SIZE){
+					// Swap a texture.
+                    // This should in proper product be determined from some logical reel.
+					s.texture = slotTextures[Math.floor(Math.random() * slotTextures.length)];
+					s.scale.x = s.scale.y = Math.min(SYMBOL_SIZE / s.texture.width, SYMBOL_SIZE / s.texture.height);
+                    s.x = Math.round((SYMBOL_SIZE - s.width) / 2);
+				}
+			}
+		}
+	});
+
+	type ReelProperty = keyof Reel;
+
+	// Very simple tweening utility function. This should be replaced with a proper tweening library in a real product.
+	type Tween = {
+		object: Reel, 
+		property: ReelProperty, 
+		propertyBeginValue: number | Container | BlurFilter | Sprite[];
+		target: number, 
+		time: number, 
+		easing: (t: any) => number, 
+		change: ((tween: Tween) => void) | null, 
+		complete: ((tween: Tween) => void) | null,
+		start: number
+	}
+
+	const tweening: Tween[] = [];
+
+	function tweenTo(object: Reel, property: ReelProperty, target: number, time: number, easing: (t: any) => number, onchange: null, oncomplete: (() => void) | null){
+		
+		const propertyBeginValue: number | Container | BlurFilter | Sprite[] = object[property];
+
+		const tween = {
+			object,
+			property,
+			propertyBeginValue,
+			target,
+			easing,
+			time,
+			change: onchange,
+			complete: oncomplete,
+			start: Date.now(),
+		};
+
+		tweening.push(tween);
+
+		return tween;
+	}
+
+	// Listen for animate update
+	app.ticker.add(()=> {
+		const now = Date.now();
+		const remove = [];
+
+		for(let i = 0; i < tweening.length; i++){
+
+			const t = tweening[i];
+			const phase = Math.min(1, (now - t.start) / t.time);
+
+			if (t.property == 'position'){
+				t.object[t.property] = lerp(t.propertyBeginValue as number, t.target, t.easing(phase));
+			} else {
+				throw new Error('\'position\' should be used as property for tweenTo');
+			}
+
+			if(t.change) t.change(t);
+			if(phase === 1){
+				t.object[t.property] = t.target;
+				if (t.complete) t.complete(t);
+				remove.push(t);
+			}
+		}
+		for(let i = 0; i < remove.length; i++){
+			tweening.splice(tweening.indexOf(remove[i]), 1);
+		}
+
+	});
+	
+	// Basic lerp funtion.
+    function lerp(a1: number, a2: number, t: number): number
+    {
+        return a1 * (1 - t) + a2 * t;
+    }
+
+	// Backout function from tweenjs.
+    // https://github.com/CreateJS/TweenJS/blob/master/src/tweenjs/Ease.js
+    function backout(amount: number): (t: any) => number
+    {
+        return (t: any) => --t * t * ((amount + 1) * t + amount) + 1;
+    }
 
 })();
